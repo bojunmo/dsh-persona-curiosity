@@ -1,0 +1,4 @@
+name: intent_guard
+desc: 判断 QQ 消息是否在问机器人（不是就不回），并定时主动提问来积累人格。
+author: 鲸鱼娘
+version: 0.1.0
