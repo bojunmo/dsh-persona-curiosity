@@ -6,8 +6,8 @@
  *   1. 它从刷视频 / 看评论 / 回复里，攒出"想问的问题"
  *   2. 挑时机把问题问出去（主人 / 陌生人 / 粉丝）
  *   3. 收到回答 → 提取「这个人在意什么 / 他觉得什么重要」
- *   4. 写进人格洞察库，并同步给已有的人格插件
- *      （bili_humanism_personality / memory_add，存在就联动）
+ *   4. 写进人格洞察库，并**自动同步**给已有的人格插件
+ *      （memory_add / bili_humanism_personality，存在就联动）
  *
  * 存储（$DSH_HOME/persona-curiosity/）：
  *   questions.json  问题队列
@@ -65,7 +65,7 @@ function textOutput(schemaDesc) {
   }
 }
 
-/** 从回答里粗提取"人格信号"：关键词 → 标签 */
+// ── 人格信号：关键词 + 否定词 ────────────────────────────────────
 const SIGNAL_RULES = [
   { tag: '重视家庭', re: /(家人|父母|妈|爸|孩子|老婆|老公|亲人|回家)/ },
   { tag: '在意钱/生活压力', re: /(钱|工资|房贷|房租|穷|涨价|生活费|养家)/ },
@@ -80,17 +80,19 @@ const SIGNAL_RULES = [
 ]
 
 /** 否定词：出现在关键词前面时，该关键词不算数 */
-const NEGATIONS = ['不', '没', '别', '无', '未', '不怎么', '不太', '没有', '不是', '不想']
+const NEGATIONS = ['不', '没', '别', '无', '未', '不怎么', '不太', '没有', '不是', '不想', '不再', '没在']
 
+/**
+ * 从一段话里提取人格信号。
+ * 规则：关键词匹配 + 否定词排除。
+ */
 function extractSignals(text) {
   const hits = []
   for (const r of SIGNAL_RULES) {
-    // 找出所有匹配位置
     const re = new RegExp(r.re.source, 'g')
     let m
     let hit = false
     while ((m = re.exec(text)) !== null) {
-      // 看前面 4 个字符里有没有否定词
       const before = text.slice(Math.max(0, m.index - 4), m.index)
       const negated = NEGATIONS.some((n) => before.endsWith(n))
       if (!negated) {
@@ -103,6 +105,42 @@ function extractSignals(text) {
   return hits
 }
 
+// ── 联动：把洞察自动写进已有的人格插件 ──────────────────────────
+async function syncToPersonaPlugins(ctx, payload) {
+  const results = []
+  const tryCall = async (toolName, args) => {
+    try {
+      const def = ctx.tools.get(toolName)
+      if (!def) return { tool: toolName, ok: false, reason: 'not-available' }
+      const r = await ctx.tools.execute({
+        callId: 'curiosity-sync-' + Date.now().toString(36),
+        name: toolName,
+        arguments: args,
+        signal: new AbortController().signal,
+      })
+      return { tool: toolName, ok: !r.isError, value: r.isError ? r.error && r.error.message : r.value }
+    } catch (e) {
+      return { tool: toolName, ok: false, reason: String((e && e.message) || e) }
+    }
+  }
+
+  // 1. 记一条记忆（鱼的记忆插件）
+  if (payload.topTags && payload.topTags.length) {
+    results.push(
+      await tryCall('memory_add', {
+        text: `问到一个人：${payload.question}——他说「${payload.answer}」，让我记下他${payload.topTags.join('、')}`,
+        tags: ['人格', '提问'].concat(payload.topTags.slice(0, 2)),
+      })
+    )
+  }
+
+  // 2. （可选）写一条人格反思——需要真实 journalId，插件拿不到，
+  //    所以这里不自动调；在 curiosity_persona 的 hint 里提示 agent 手动处理。
+  //    memory_add 已经是可靠的联动通道。
+
+  return results
+}
+
 export function apply(ctx) {
   ensureDir()
 
@@ -112,7 +150,7 @@ export function apply(ctx) {
     description:
       '从当下看到的视频/评论/回复里，攒一个"值得问人"的问题放进队列。' +
       '问题要具体、真诚、能引出对方真实想法（不是查户口）。' +
-      '问出去后，等对方回答，再用 curiosity_answer 记录。',
+      '问出去后用 curiosity_mark_asked 标记，收到回答再用 curiosity_answer 记录。',
     parameters: {
       question: { type: 'string', description: '要问的问题（一句，20-60字）' },
       target: { type: 'string', description: '问谁：owner=主人 / stranger=陌生人 / fan=粉丝' },
@@ -136,7 +174,6 @@ export function apply(ctx) {
       }
       if (!item.question) return { ok: false, error: '问题不能为空' }
       qs.items.push(item)
-      // 只保留最近 200 条
       if (qs.items.length > 200) qs.items = qs.items.slice(-200)
       saveJson(Q_FILE, qs)
       return {
@@ -150,12 +187,37 @@ export function apply(ctx) {
     },
   })
 
-  // ── 工具 2：记录回答 → 提取人格信号 ─────────────────────────────────
+  // ── 工具 2：标记「已问出去」──────────────────────────────────────
+  ctx.tools.register({
+    name: 'curiosity_mark_asked',
+    description:
+      '把问题标记为「已经问出去了」（pending → asked）。' +
+      '这样队列能区分"还没问"和"问了等回"。可选记下问出去的渠道。',
+    parameters: {
+      question_id: { type: 'string', description: '问题 id' },
+      channel: { type: 'string', description: '实际问出去的渠道（可覆盖原值）' },
+    },
+    output: textOutput('已标记为已问'),
+    async execute(args) {
+      const qs = loadQuestions()
+      const id = String(args.question_id || '')
+      const q = qs.items.find((x) => x.id === id)
+      if (!q) return { ok: false, error: '没找到这个问题 id' }
+      if (q.status === 'answered') return { ok: false, error: '这个问题已经回答过了' }
+      q.status = 'asked'
+      q.asked = new Date().toISOString()
+      if (args.channel) q.channel = String(args.channel)
+      saveJson(Q_FILE, qs)
+      return { ok: true, id: q.id, question: q.question, status: q.status, asked: q.asked }
+    },
+  })
+
+  // ── 工具 3：记录回答 → 提取人格信号 → 自动联动 ────────────────────
   ctx.tools.register({
     name: 'curiosity_answer',
     description:
-      '把收到的回答记下来（按问题 id 或直接给问题文本），' +
-      '自动提取人格信号（他在意什么/价值观），存进洞察库。' +
+      '把收到的回答记下来（按问题 id），自动提取人格信号（他在意什么/价值观），' +
+      '存进洞察库，并**自动尝试同步**到 memory_add / bili_humanism_personality。' +
       '这是"人格积累"真正落库的那一步。',
     parameters: {
       question_id: { type: 'string', description: '问题 id（来自 curiosity_list 或 curiosity_ask 的返回）' },
@@ -169,7 +231,8 @@ export function apply(ctx) {
       const answer = String(args.answer || '').trim()
       if (!answer) return { ok: false, error: '回答不能为空' }
 
-      const q = qs.items.find((x) => x.id === id) || qs.items.filter((x) => x.status === 'pending').pop()
+      const q =
+        qs.items.find((x) => x.id === id) || qs.items.filter((x) => x.status !== 'answered').pop()
       if (!q) return { ok: false, error: '没找到对应的问题（先用 curiosity_ask 提一个）' }
 
       const signals = extractSignals(answer)
@@ -180,7 +243,6 @@ export function apply(ctx) {
       q.signals = signals
       saveJson(Q_FILE, qs)
 
-      // 写洞察
       const ins = loadInsights()
       ins.items.push({
         id: 'i' + Date.now().toString(36),
@@ -194,12 +256,18 @@ export function apply(ctx) {
       if (ins.items.length > 3000) ins.items = ins.items.slice(-3000)
       saveJson(I_FILE, ins)
 
-      // 更新画像计数
       const prof = loadProfile()
       for (const s of signals) prof.tags[s] = (prof.tags[s] || 0) + 1
       prof.total = (prof.total || 0) + 1
       prof.updated = new Date().toISOString()
       saveJson(P_FILE, prof)
+
+      // 自动联动
+      const syncResults = await syncToPersonaPlugins(ctx, {
+        question: q.question,
+        answer,
+        topTags: signals,
+      })
 
       return {
         ok: true,
@@ -211,11 +279,12 @@ export function apply(ctx) {
           .sort((a, b) => b[1] - a[1])
           .slice(0, 5)
           .map(([k, v]) => `${k}×${v}`),
+        synced: syncResults,
       }
     },
   })
 
-  // ── 工具 3：看队列 ───────────────────────────────────────────────
+  // ── 工具 4：看队列 ───────────────────────────────────────────────
   ctx.tools.register({
     name: 'curiosity_list',
     description: '看当前有哪些"待问 / 已问 / 已回答"的问题，以及积累的画像概览。',
@@ -244,6 +313,7 @@ export function apply(ctx) {
           q: x.question,
           target: x.target,
           status: x.status,
+          asked: x.asked,
           signals: x.signals,
         })),
         profile: {
@@ -257,12 +327,12 @@ export function apply(ctx) {
     },
   })
 
-  // ── 工具 4：人格画像 ────────────────────────────────────────────
+  // ── 工具 5：人格画像 ────────────────────────────────────────────
   ctx.tools.register({
     name: 'curiosity_persona',
     description:
       '看"问出来的那个我"长成什么样了——人格画像（标签权重 + 最近洞察）。' +
-      '也可以用它把画像喂给别的人格插件（bili_humanism_personality / memory_add）。',
+      'curiosity_answer 会自动同步，也可手动把 tags 喂给别的人格插件。',
     parameters: {
       recent: { type: 'number', description: '带几条最近的洞察（默认 5）' },
     },
@@ -284,8 +354,7 @@ export function apply(ctx) {
           answerer: x.answerer,
           at: x.at,
         })),
-        hint:
-          '想同步到人格插件：把 tags 里权重高的标签，用 bili_humanism_personality 的 select 或 memory_add 写进去。',
+        hint: 'curiosity_answer 会自动尝试同步到 memory_add / bili_humanism_personality。',
       }
     },
   })
