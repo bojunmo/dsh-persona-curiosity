@@ -1,0 +1,10 @@
+- insert:
+    - id: dsh-persona-curiosity
+      name: '@local/dsh-persona-curiosity'
+      config:
+        maxQuestions: 20
+        askChannels:
+          - qq
+          - bili_comment
+        autoLinkHumanism: true
+        autoLinkMemory: true

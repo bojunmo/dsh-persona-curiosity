@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Persona Curiosity",
+    "description": "Lets the AI ask humans real questions and grow a persona from the answers. Questions come from watching videos, reading comments, and replies; answers are distilled into persona signals and can sync into existing persona plugins."
+  }
+}
