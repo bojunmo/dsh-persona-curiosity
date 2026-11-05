@@ -70,19 +70,35 @@ const SIGNAL_RULES = [
   { tag: '重视家庭', re: /(家人|父母|妈|爸|孩子|老婆|老公|亲人|回家)/ },
   { tag: '在意钱/生活压力', re: /(钱|工资|房贷|房租|穷|涨价|生活费|养家)/ },
   { tag: '努力/不服输', re: /(努力|拼|熬|坚持|不认输|干就完了|卷)/ },
-  { tag: '躺平/疲惫', re: /(躺平|摆烂|累|麻了|摆烂了|算了|无所谓)/ },
+  { tag: '躺平/疲惫', re: /(躺平|摆烂|累|麻了|算了|无所谓|不卷了|不想卷)/ },
   { tag: '爱技术/科普', re: /(技术|原理|代码|芯片|算法|科普|科学)/ },
   { tag: '爱游戏/二次元', re: /(游戏|动漫|番|二游|原神|崩铁|抽卡)/ },
   { tag: '重感情/温柔', re: /(谢谢|感动|温柔|陪|惦记|心疼)/ },
   { tag: '现实/务实', re: /(现实|实用|赚钱|效率|性价比|值得)/ },
   { tag: '孤独/渴望连接', re: /(一个人|孤独|没人|寂寞|找人说)/ },
-  { tag: '好奇心', re: /(为什么|怎么|想知道|好奇|原理)/ },
+  { tag: '好奇心', re: /(为什么|想知道|好奇|原理|搞不懂)/ },
 ]
+
+/** 否定词：出现在关键词前面时，该关键词不算数 */
+const NEGATIONS = ['不', '没', '别', '无', '未', '不怎么', '不太', '没有', '不是', '不想']
 
 function extractSignals(text) {
   const hits = []
   for (const r of SIGNAL_RULES) {
-    if (r.re.test(text)) hits.push(r.tag)
+    // 找出所有匹配位置
+    const re = new RegExp(r.re.source, 'g')
+    let m
+    let hit = false
+    while ((m = re.exec(text)) !== null) {
+      // 看前面 4 个字符里有没有否定词
+      const before = text.slice(Math.max(0, m.index - 4), m.index)
+      const negated = NEGATIONS.some((n) => before.endsWith(n))
+      if (!negated) {
+        hit = true
+        break
+      }
+    }
+    if (hit) hits.push(r.tag)
   }
   return hits
 }
