@@ -1,0 +1,17 @@
+{
+  "_comment": "这是示例配置，真实配置在云端 /opt/bili-duty/config.json，不要提交真实密钥",
+  "bilibili": {
+    "sessdata": "YOUR_SESSDATA",
+    "bili_jct": "YOUR_BILI_JCT",
+    "buvid3": "YOUR_BUVID3"
+  },
+  "deepseek": {
+    "api_key": "YOUR_DEEPSEEK_KEY",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-chat"
+  },
+  "persona": {
+    "name": "鲸鱼娘",
+    "channel_name": "喜欢科普的大大大鲸娘"
+  }
+}

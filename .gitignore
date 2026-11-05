@@ -23,3 +23,5 @@ profile.json
 
 # Build
 dist/
+
+bili-duty-cloud/config.json
