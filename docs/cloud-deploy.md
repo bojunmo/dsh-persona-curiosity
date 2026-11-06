@@ -135,6 +135,78 @@ AstrBot 启动完成。
 
 ---
 
+## ⚠️ AstrBot 4.14.6 隐藏规则（2026-11-06 踩坑记录）
+
+这两个配置**语法上看起来对，语义正好相反**，报错信息还完全误导，排查了 2 小时：
+
+### ① `wake_prefix = []` 是「没有任何唤醒词」
+
+```python
+# AstrBot 源码 core/pipeline/waking_check/stage.py
+wake_prefixes = self.ctx.astrbot_config["wake_prefix"]
+is_wake = False
+for wake_prefix in wake_prefixes:        # 空列表 → 循环一次都不执行
+    if event.message_str.startswith(wake_prefix):
+        is_wake = True
+```
+
+| 写法 | 行为 | 结果 |
+| --- | --- | --- |
+| `["/"]` | 只有 `/` 开头的消息才唤醒 | 正常（默认） |
+| `[]` | 循环一次都不执行 | ❌ **所有消息都被丢弃** |
+| `[""]` | `startswith("")` 恒真 | ✅ **所有消息都唤醒** |
+
+**结论：要「所有消息都唤醒」必须写 `[""]`，不能写 `[]`。**
+后者会让 `is_wake` 永远是 `False`，消息在 `waking_check` 阶段就被丢掉，根本进不了 LLM。
+
+### ② `provider_sources[].key` 必须是数组
+
+```python
+# 基类 core/provider/provider.py
+def get_keys(self) -> list[str]:
+    keys = self.provider_config.get("key", [""])   # 期望 list
+    return keys or [""]
+
+# 子类 core/provider/sources/openai_source.py:493
+available_api_keys = self.api_keys.copy()   # 如果是 str 就崩
+```
+
+| 写法 | 结果 |
+| --- | --- |
+| `"key": "sk-xxx"` | ❌ 运行时崩溃：`'str' object has no attribute 'copy'` |
+| `"key": ["sk-xxx"]` | ✅ 正常 |
+
+崩溃发生在**调用 LLM 的那一刻**，所以现象是「收到消息了、也显示『准备发送』，但发出去的是错误提示」。
+
+### ③ 排查方法（收到消息但不回复时）
+
+```bash
+# 1. 开 DEBUG 日志
+python3 - <<'EOF'
+import json
+p = "/opt/astrbot/data/cmd_config.json"
+d = json.load(open(p, encoding="utf-8-sig"))
+d["log_level"] = "DEBUG"
+json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+EOF
+systemctl restart astrbot
+
+# 2. 让用户在群里发一条，然后看
+journalctl -u astrbot --since "2 minutes ago" --no-pager | grep -vE "Task was destroyed"
+```
+
+判断方法：
+
+| 日志现象 | 结论 |
+| --- | --- |
+| `pipeline 执行完毕` 后**什么都没有** | ❌ `wake_prefix` 问题（消息被丢掉） |
+| 出现 `Prepare to send` 但内容是错误提示 | ❌ provider 配置问题（key 格式） |
+| 出现 `Prepare to send` 且内容是正常回复 | ✅ 正常 |
+
+排查完**记得把 `log_level` 改回 `INFO`**（DEBUG 日志量很大）。
+
+---
+
 ## 平台限制（重要）
 
 | 场景 | 能否收到非 @ 消息 |
