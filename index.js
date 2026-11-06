@@ -18,6 +18,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import {
+  linkIdentities,
+  resolveCanonical,
+  getAllIdentities,
+  listLinks,
+  unlinkIdentity,
+} from './lib/people.js'
 
 export const name = 'persona-curiosity'
 export const inject = ['tools']
@@ -356,6 +363,51 @@ export function apply(ctx) {
         })),
         hint: 'curiosity_answer 会自动尝试同步到 memory_add / bili_humanism_personality。',
       }
+    },
+  })
+
+  // ---------------------------------------------------------------------
+  // 跨平台关联（把同一个人在 B站 / QQ / ... 的身份串起来）
+  // ---------------------------------------------------------------------
+  ctx.tools.register({
+    name: 'curiosity_link',
+    description:
+      '把同一个人的多个平台身份关联起来（比如主人的 B站 uid 和 QQ uid），' +
+      '画像合并。canonical 是主身份名（如 owner），platform 是 bilibili/qq，uid 是对应平台 id。',
+    parameters: {
+      canonical: { type: 'string', description: '主身份名（如 owner / friend_xxx）' },
+      platform: { type: 'string', description: '平台：bilibili / qq / 其他' },
+      uid: { type: 'string', description: '该平台的用户 id' },
+    },
+    output: textOutput('关联结果'),
+    async execute(args) {
+      const canonical = String(args.canonical || '').trim()
+      const platform = String(args.platform || '').trim()
+      const uid = String(args.uid || '').trim()
+      if (!canonical || !platform || !uid) {
+        return { ok: false, error: 'canonical / platform / uid 都要给' }
+      }
+      const link = await linkIdentities(canonical, platform, uid)
+      return { ok: true, canonical, identities: link.identities }
+    },
+  })
+
+  ctx.tools.register({
+    name: 'curiosity_identities',
+    description:
+      '查看跨平台关联：不传 canonical 就列出所有关联；传了就查这个人的所有身份。',
+    parameters: {
+      canonical: { type: 'string', description: '主身份名（可选）' },
+    },
+    output: textOutput('身份列表'),
+    async execute(args) {
+      const canonical = String(args.canonical || '').trim()
+      if (!canonical) {
+        const links = await listLinks()
+        return { ok: true, links }
+      }
+      const identities = await getAllIdentities(canonical)
+      return { ok: true, canonical, identities }
     },
   })
 }
