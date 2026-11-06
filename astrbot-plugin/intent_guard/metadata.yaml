@@ -1,0 +1,4 @@
+name: intent_guard
+desc: 判断 QQ 消息要不要回 + 主动提问积累人格（每 30 分钟一次 / 每天最多 12 次）。
+author: 鲸鱼娘
+version: 0.2.0
