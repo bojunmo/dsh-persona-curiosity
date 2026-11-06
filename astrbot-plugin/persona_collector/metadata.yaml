@@ -1,0 +1,4 @@
+name: persona_collector
+desc: 把 QQ 聊天里的人格信号记进 persona-curiosity 人格库（跨平台统一画像）。
+author: 鲸鱼娘
+version: 0.1.0
