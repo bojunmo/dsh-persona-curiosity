@@ -120,6 +120,8 @@ class IntentGuard(Star):
         self._today = ""
         self._today_count = 0
         self._used_builtin = set()  # 今天用过的内置问题（避免重复）
+        # 当前「问了但还没人回」的问题。存在时不再问新的，直到有人回或第二天
+        self._awaiting_question = None
 
     async def initialize(self):
         if self._ask_task is None or self._ask_task.done():
@@ -136,6 +138,17 @@ class IntentGuard(Star):
                     self._today = today
                     self._today_count = 0
                     self._used_builtin = set()
+                    # 第二天重置「等回复」状态
+                    if self._awaiting_question:
+                        logger.info(
+                            f"intent_guard: 新的一天，重置等回复状态"
+                            f"（上一个还在等：{self._awaiting_question}）"
+                        )
+                        self._awaiting_question = None
+
+                # ⭐ 上一个问题还没人回 → 不再问新的（直到有人回或第二天）
+                if self._awaiting_question:
+                    continue
 
                 if now - self._last_ask < self.ask_interval:
                     continue
@@ -153,7 +166,11 @@ class IntentGuard(Star):
                     self._used_builtin.add(q["id"])
                     self._last_ask = now
                     self._today_count += 1
-                    logger.info(f"intent_guard: 主动提问 「{q['question']}」")
+                    # ⭐ 记下「正在等回复」——在此之前不再问新问题
+                    self._awaiting_question = q["question"]
+                    logger.info(
+                        f"intent_guard: 主动提问 「{q['question']}」（等回复中，不回就不再问）"
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -189,6 +206,14 @@ class IntentGuard(Star):
     async def add_intent_hint(self, event: AstrMessageEvent, req):
         """在 LLM 请求前加一条判定提示：要不要回这条消息。"""
         try:
+            # ⭐ 有人说话了 → 之前问的问题算「有回应」，清除等待状态
+            if self._awaiting_question:
+                logger.info(
+                    f"intent_guard: 收到消息，清除等回复状态"
+                    f"（之前问的是：{self._awaiting_question}）"
+                )
+                self._awaiting_question = None
+
             hint = (
                 "\n\n【回复判定】先判断这条消息是不是在跟你说话 / 问你问题：\n"
                 "- 是在问你（提问、求助、接你的话、直接叫你）→ 正常回复\n"
