@@ -36,36 +36,36 @@ QUESTIONS_FILE = os.path.join(CURIOSITY_DIR, "questions.json")
 
 # 内置问题池（问人格的，不查户口）
 QUESTIONS_POOL = [
-    "你最近一次觉得「这事值了」是什么时候？",
-    "你现在最想搞懂的一件事是什么？",
-    "如果明天不用上班，你会干嘛？",
-    "你有没有过「明明很累但就是不想睡」的时候？",
-    "你最近一次被人说「你想多了」是什么情况？",
-    "你觉得「活得舒服」和「活得体面」，哪个更让你在意？",
-    "你上一次特别想找个人说话，是因为什么？",
-    "你怎么判断一个人值不值得深交？",
-    "你最近有没有为了什么事「忍」下来？",
-    "如果让你给三年前的自己一句话，你会说什么？",
-    "你觉得自己身上最像父母的地方是什么？",
-    "你最近一次「破防」是因为什么？",
-    "你更怕「做错」还是「错过」？",
-    "你有没有一件事，坚持了很久但其实没什么用？",
-    "你怎么花钱最不心疼？",
-    "你最近有没有突然想起很久以前的人？",
-    "你觉得「被理解」和「被需要」，哪个更难得到？",
-    "你上一次认真夸别人是什么时候？",
-    "你有没有那种「说不上好但就是离不开」的习惯？",
-    "你最近一次觉得「我不属于这里」是什么场合？",
-    "你心里有没有一个「以后一定要做」的事？",
-    "你怎么看「躺平」这个词？",
-    "你最近有没有因为一句话高兴一整天的经历？",
-    "你觉得自己最大的缺点是啥？",
-    "你有没有那种「明明不想去但还是去了」的饭局？",
-    "你上一次哭是因为什么？",
-    "你觉得人到了什么年纪，就不该再折腾了？",
-    "你有没有一件「说出来怕被笑」的梦想？",
-    "你最近一次觉得「时间过得真快」是什么时候？",
-    "如果现在能立刻拥有一项技能，你选什么？",
+    "诶 最近有啥让你觉得值了的事吗",
+    "话说你最近在琢磨啥",
+    "如果明天不用上班 你打算干嘛",
+    "有没有那种明明很困但就是不想睡的时候",
+    "最近有没有被人说你想多了 啥情况",
+    "你觉得活得舒服和活得体面 哪个更在意",
+    "上一次特别想找个人说话是啥时候",
+    "你咋判断一个人值不值得深交",
+    "最近有没有为啥事忍下来了",
+    "给三年前的自己说句话 你会说啥",
+    "你觉得自己身上最像你爸妈的地方是啥",
+    "最近一次破防是啥事",
+    "你更怕做错还是错过",
+    "有没有一件事坚持了很久但其实没啥用",
+    "你花钱最不心疼的是啥",
+    "最近有没有突然想起某个很久以前的人",
+    "被理解和被需要 你觉得哪个更难",
+    "上一次认真夸别人是啥时候",
+    "有没有那种说不上好但就是离不开的习惯",
+    "最近一次觉得自己不属于那儿是啥场合",
+    "心里有没有一个以后一定要做的事",
+    "你咋看躺平这个词",
+    "有没有因为一句话高兴一整天的经历",
+    "你觉得自己最大的缺点是啥",
+    "有没有那种明明不想去但还是去了的饭局",
+    "上一次哭是因为啥",
+    "你觉得人到了啥年纪就不该折腾了",
+    "有没有一个说出来怕被笑的梦想",
+    "最近一次觉得时间过得真快是啥时候",
+    "如果能立刻拥有一项技能 你选啥",
 ]
 
 
@@ -137,16 +137,18 @@ class IntentGuard(Star):
         super().__init__(context)
         self._ask_task = None
         self._last_ask = 0.0
-        # 主动提问间隔（秒）：30 分钟
-        self.ask_interval = 1800
+        # 主动提间隔（秒）：1 小时问一次「可以问个问题吗？」
+        self.ask_interval = 3600
         # 每天最多问几次
         self.daily_limit = 12
         self._today = ""
         self._today_count = 0
         self._used_builtin = set()  # 今天用过的内置问题（避免重复）
-        # 当前「问了但还没人回」的问题。存在时不再问新的，直到有人回或第二天
+        # 等待状态：None / "permission"（等许可）/ "question"（等回答）
+        self._awaiting_type = None
+        # 当前问题（等回答时才有）
         self._awaiting_question = None
-        # 这个问题的关键词（用来判断消息是否「真的在回答它」）
+        # 这个问题的关键词
         self._awaiting_keywords = []
 
     async def initialize(self):
@@ -155,6 +157,7 @@ class IntentGuard(Star):
             logger.info("intent_guard: 主动提问任务已启动（30分钟/12次/天）")
 
     async def _ask_loop(self):
+        """每 1 小时问一次「可以问个问题吗？」，得到许可后才问真正的问题"""
         while True:
             try:
                 await asyncio.sleep(120)  # 每 2 分钟检查一次
@@ -164,50 +167,91 @@ class IntentGuard(Star):
                     self._today = today
                     self._today_count = 0
                     self._used_builtin = set()
-                    # 第二天重置「等回复」状态
-                    if self._awaiting_question:
-                        logger.info(
-                            f"intent_guard: 新的一天，重置等回复状态"
-                            f"（上一个还在等：{self._awaiting_question}）"
-                        )
+                    if self._awaiting_type:
+                        logger.info("intent_guard: 新的一天，重置等待状态")
+                        self._awaiting_type = None
                         self._awaiting_question = None
 
-                # ⭐ 上一个问题还没人回 → 不再问新的（直到有人回或第二天）
-                if self._awaiting_question:
+                # ⭐ 有等待（许可 or 回答）→ 不问
+                if self._awaiting_type:
                     continue
 
+                # 还没到 1 小时 → 跳过
                 if now - self._last_ask < self.ask_interval:
                     continue
                 if self._today_count >= self.daily_limit:
                     continue
 
-                cands = [q for q in _pending_questions() if q.get("id") not in self._used_builtin]
-                if not cands:
-                    continue
-
-                q = random.choice(cands)
-                sent = await self._send_question(q)
-                if sent:
-                    _mark_asked(q["id"])
-                    self._used_builtin.add(q["id"])
+                # 问许可
+                if await self._ask_permission():
+                    self._awaiting_type = "permission"
                     self._last_ask = now
-                    self._today_count += 1
-                    # ⭐ 记下「正在等回复」——在此之前不再问新问题
-                    self._awaiting_question = q["question"]
-                    self._awaiting_keywords = extract_keywords(q["question"])
-                    logger.info(
-                        f"intent_guard: 主动提问 「{q['question']}」"
-                        f"（等回复中，关键词={self._awaiting_keywords}，不回就不再问）"
-                    )
+                    logger.info("intent_guard: 已问「可以问个问题吗？」，等许可")
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.warning(f"intent_guard ask loop: {e}")
 
+    # 自然的开场白（随机轮换，别像机器人）
+    _PERMISSION_OPENINGS = [
+        "诶 问你个事儿",
+        "话说",
+        "问个问题哈",
+        "有点好奇",
+        "突然想到个事",
+        "我好奇一个事",
+        "想问一下",
+        "话说你们",
+        "诶",
+    ]
+
+    async def _ask_permission(self):
+        """问「可以问个问题吗？」——用自然的开场白"""
+        try:
+            opening = random.choice(self._PERMISSION_OPENINGS)
+            text = f"{opening} 能问你个问题不"
+            body = json.dumps(
+                {
+                    "group_id": GROUP_ID,
+                    "message": [{"type": "text", "data": {"text": text}}],
+                }
+            ).encode("utf-8")
+            req = urllib.request.Request(
+                NAPCAT_API + "/send_group_msg",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            return result.get("status") == "ok"
+        except Exception as e:
+            logger.warning(f"intent_guard: 问许可失败 {e}")
+            return False
+
+    async def _ask_real_question(self):
+        """得到许可后，真的问一个问题"""
+        cands = [
+            q for q in _pending_questions() if q.get("id") not in self._used_builtin
+        ]
+        if not cands:
+            return False
+        q = random.choice(cands)
+        if await self._send_question(q):
+            _mark_asked(q["id"])
+            self._used_builtin.add(q["id"])
+            self._today_count += 1
+            self._awaiting_type = "question"
+            self._awaiting_question = q["question"]
+            logger.info(f"intent_guard: 得到许可，问「{q['question']}」（等回答）")
+            return True
+        return False
+
     async def _send_question(self, q):
         """直接调 NapCat 的 HTTP API 发到群里"""
         try:
-            text = f"【问一下】{q['question']}"
+            # 自然点：不加机械前缀，问题本身就问得很口语
+            text = q["question"]
             body = json.dumps(
                 {
                     "group_id": GROUP_ID,
@@ -229,6 +273,20 @@ class IntentGuard(Star):
         except Exception as e:
             logger.warning(f"intent_guard: _send_question 失败 {e}")
             return False
+
+    def _is_permission(self, text):
+        """判断消息是不是「可以/问吧/行」这类许可"""
+        YES = [
+            "可以", "问吧", "行", "好", "来吧", "问", "ok", "OK",
+            "问呗", "你问", "没问题", "随便问", "嗯",
+        ]
+        NO = ["不可以", "不行", "别问", "不要", "不用", "不想", "算了"]
+        t = (text or "").strip()
+        if not t:
+            return False
+        if any(n in t for n in NO):
+            return False
+        return any(y in t for y in YES)
 
     def _is_answer_to_awaiting(self, text):
         """判断消息是否在回答当前问题（先快筛，再调 DeepSeek）"""
@@ -290,14 +348,24 @@ class IntentGuard(Star):
     async def add_intent_hint(self, event: AstrMessageEvent, req):
         """在 LLM 请求前加一条判定提示：要不要回这条消息。"""
         try:
-            # ⭐ 只有「真的回答了问题」才清除等待状态
-            if self._awaiting_question:
-                text = (event.message_str or "").strip()
-                if text and self._is_answer_to_awaiting(text):
+            text = (event.message_str or "").strip()
+
+            # ⭐ 等许可：判断是不是「可以」「问吧」这类
+            if self._awaiting_type == "permission" and text:
+                if self._is_permission(text):
+                    logger.info(f"intent_guard: 得到许可「{text[:20]}」，开始问问题")
+                    self._awaiting_type = None
+                    await self._ask_real_question()
+                else:
+                    logger.info(f"intent_guard: 「{text[:20]}」不算许可，继续等")
+            # ⭐ 等回答：判断是不是「真的在回答」
+            elif self._awaiting_type == "question" and text:
+                if self._is_answer_to_awaiting(text):
                     logger.info(
-                        f"intent_guard: 收到疑似回答「{text[:20]}」，清除等回复状态"
+                        f"intent_guard: 得到回答「{text[:20]}」，清除等待"
                         f"（之前问的是：{self._awaiting_question}）"
                     )
+                    self._awaiting_type = None
                     self._awaiting_question = None
                     self._awaiting_keywords = []
 
